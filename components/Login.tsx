@@ -7,7 +7,7 @@ interface LoginProps {
 const Login: React.FC<LoginProps> = ({ message }) => {
   const handleLogin = () => {
     // Redirect to backend auth endpoint
-    window.location.href = 'http://localhost:3001/auth/google';
+    window.location.href = 'https://aerion.onrender.com/auth/google';
   };
 
   return (

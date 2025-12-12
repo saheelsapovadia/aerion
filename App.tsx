@@ -69,7 +69,7 @@ const App: React.FC = () => {
     }
 
     // Check for auth
-    fetch('http://localhost:3001/me', {
+    fetch('https://aerion.onrender.com/me', {
       credentials: 'include' // Important for cookies
     })
     .then(res => {
@@ -234,7 +234,7 @@ const App: React.FC = () => {
       {!user && !loading && !trialExpired && (
         <div className="absolute top-6 right-6 z-20">
           <button
-            onClick={() => window.location.href = 'http://localhost:3001/auth/google'}
+            onClick={() => window.location.href = 'https://aerion.onrender.com/auth/google'}
             className="group flex items-center gap-2 px-6 py-3 border border-cyan-500/30 bg-black/40 backdrop-blur-sm hover:bg-cyan-900/10 hover:border-cyan-400/60 transition-all duration-300 rounded-lg"
           >
             <span className="text-xs font-mono text-cyan-400 tracking-widest uppercase group-hover:text-cyan-300">

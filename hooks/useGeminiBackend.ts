@@ -7,7 +7,7 @@ interface UseGeminiBackendProps {
   onAudioActivity?: (volume: number) => void;
 }
 
-const SERVER_URL = 'http://localhost:3001';
+const SERVER_URL = 'https://aerion.onrender.com';
 
 export const useGeminiBackend = ({ onAudioActivity }: UseGeminiBackendProps = {}) => {
   const [connectionState, setConnectionState] = useState<ConnectionState>(ConnectionState.DISCONNECTED);
