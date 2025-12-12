@@ -1,0 +1,7 @@
+{
+  "name": "Aether - Sentient Voice Interface",
+  "description": "A living, abstract 3D visual agent that responds to voice in real-time using Gemini Live API. Features fluid organic animation, volumetric lighting, and reactive physics.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}

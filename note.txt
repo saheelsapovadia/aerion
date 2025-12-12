@@ -1,0 +1,12 @@
+want to give a free taste of the product to the user. before they sign up.
+also this free taste should be limited amount of time per user. user should be tagged based on ip and device.
+post then should be prompted to sign up to continue using the product.
+
+
+need to disconnect the audio once there is no activity for 10 seconds.
+
+
+---
+
+i need to investigate audio, even when its disconnected, the 3d effect changes color based on surrounding noise. does it
+send audio to the backend even when its disconnected?
