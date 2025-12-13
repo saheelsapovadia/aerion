@@ -12,17 +12,17 @@ const Login: React.FC<LoginProps> = ({ message }) => {
 
   return (
     <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
-      <div className="text-center p-8 border border-cyan-500/30 bg-black/50 rounded-lg shadow-[0_0_30px_rgba(6,182,212,0.15)] max-w-md w-full mx-4">
-        <h2 className="text-3xl font-thin tracking-widest text-white mb-8 font-['Space_Grotesk'] uppercase">
+      <div className="text-center p-4 md:p-8 border border-cyan-500/30 bg-black/50 rounded-lg shadow-[0_0_30px_rgba(6,182,212,0.15)] max-w-md w-full mx-4">
+        <h2 className="text-xl md:text-3xl font-thin tracking-widest text-white mb-4 md:mb-8 font-['Space_Grotesk'] uppercase">
           {message || 'Authentication'}
         </h2>
-        <p className="text-gray-400 mb-8 font-mono text-sm leading-relaxed">
+        <p className="text-gray-400 mb-4 md:mb-8 font-mono text-xs md:text-sm leading-relaxed">
           {message ? 'Trial period expired. Please sign in to continue.' : 'Identity verification required for interface access.'}
         </p>
         
         <button
           onClick={handleLogin}
-          className="group relative px-8 py-4 bg-transparent border border-cyan-500/50 hover:border-cyan-400 text-cyan-500 hover:text-cyan-400 font-mono text-sm uppercase tracking-widest transition-all duration-300 hover:shadow-[0_0_20px_rgba(6,182,212,0.3)] w-full"
+          className="group relative px-4 py-3 md:px-8 md:py-4 bg-transparent border border-cyan-500/50 hover:border-cyan-400 text-cyan-500 hover:text-cyan-400 font-mono text-xs md:text-sm uppercase tracking-widest transition-all duration-300 hover:shadow-[0_0_20px_rgba(6,182,212,0.3)] w-full"
         >
           <span className="relative z-10 flex items-center justify-center gap-3">
             <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">

@@ -52,15 +52,15 @@ const App: React.FC = () => {
 
   useEffect(() => {
     // Tag device
-    if (!localStorage.getItem('aether_device_id')) {
+    if (!localStorage.getItem('aerion_device_id')) {
       const deviceId = typeof crypto !== 'undefined' && crypto.randomUUID 
         ? crypto.randomUUID() 
         : Math.random().toString(36).substring(2) + Date.now().toString(36);
-      localStorage.setItem('aether_device_id', deviceId);
+      localStorage.setItem('aerion_device_id', deviceId);
     }
 
     // Check trial status
-    const usage = parseInt(localStorage.getItem('aether_trial_usage') || '0', 10);
+    const usage = parseInt(localStorage.getItem('aerion_trial_usage') || '0', 10);
     if (usage >= TRIAL_LIMIT_SECONDS) {
       setTrialExpired(true);
       setTrialTimeLeft(0);
@@ -108,7 +108,7 @@ const App: React.FC = () => {
         setTrialTimeLeft(prev => {
           const newVal = prev - 1;
           const used = TRIAL_LIMIT_SECONDS - newVal;
-          localStorage.setItem('aether_trial_usage', used.toString());
+          localStorage.setItem('aerion_trial_usage', used.toString());
           
           if (newVal <= 0) {
             setTrialExpired(true);
@@ -199,13 +199,13 @@ const App: React.FC = () => {
       </div>
 
       {/* UI Overlay */}
-      <div className="absolute top-8 left-0 w-full text-center pointer-events-none z-10">
-        <h1 className="text-3xl font-thin tracking-[0.2em] text-white/80 font-['Space_Grotesk'] uppercase drop-shadow-lg">
-          Aether
+      <div className="absolute top-4 md:top-8 left-0 w-full text-center pointer-events-none z-10">
+        <h1 className="text-xl md:text-3xl font-thin tracking-[0.2em] text-white/80 font-['Space_Grotesk'] uppercase drop-shadow-lg">
+          Aerion
         </h1>
-        <div className="h-px w-24 bg-gradient-to-r from-transparent via-cyan-500 to-transparent mx-auto mt-4 opacity-50"></div>
+        <div className="h-px w-16 md:w-24 bg-gradient-to-r from-transparent via-cyan-500 to-transparent mx-auto mt-2 md:mt-4 opacity-50"></div>
         {!user && !loading && !trialExpired && (
-          <div className="mt-2 text-xs text-yellow-500/60 font-mono tracking-widest">
+          <div className="mt-2 text-[10px] md:text-xs text-yellow-500/60 font-mono tracking-widest">
             TRIAL MODE: {Math.floor(trialTimeLeft / 60)}:{(trialTimeLeft % 60).toString().padStart(2, '0')}
           </div>
         )}
@@ -213,14 +213,14 @@ const App: React.FC = () => {
 
       {/* HUD: Operator Identity */}
       {user && (
-        <div className="absolute top-6 left-6 pointer-events-none z-20">
-          <div className="flex flex-col items-start p-4 border-l-2 border-cyan-500/50 bg-black/40 backdrop-blur-md rounded-r-lg shadow-[0_0_15px_rgba(6,182,212,0.2)]">
-            <span className="text-[10px] text-cyan-400/80 font-mono uppercase tracking-[0.2em] mb-1">
+        <div className="absolute top-2 left-2 md:top-6 md:left-6 pointer-events-none z-20">
+          <div className="flex flex-col items-start p-2 md:p-4 border-l-2 border-cyan-500/50 bg-black/40 backdrop-blur-md rounded-r-lg shadow-[0_0_15px_rgba(6,182,212,0.2)]">
+            <span className="text-[8px] md:text-[10px] text-cyan-400/80 font-mono uppercase tracking-[0.2em] mb-1">
               Operator
             </span>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 md:gap-3">
               <UserAvatar name={user.name} picture={user.picture} />
-              <span className="text-lg text-white font-['Space_Grotesk'] tracking-wide uppercase shadow-black drop-shadow-md">
+              <span className="text-sm md:text-lg text-white font-['Space_Grotesk'] tracking-wide uppercase shadow-black drop-shadow-md">
                 {user.name}
               </span>
             </div>
@@ -232,15 +232,15 @@ const App: React.FC = () => {
 
       {/* Trial Login Button */}
       {!user && !loading && !trialExpired && (
-        <div className="absolute top-6 right-6 z-20">
+        <div className="absolute top-2 right-2 md:top-6 md:right-6 z-20">
           <button
             onClick={() => window.location.href = 'https://aerion.onrender.com/auth/google'}
-            className="group flex items-center gap-2 px-6 py-3 border border-cyan-500/30 bg-black/40 backdrop-blur-sm hover:bg-cyan-900/10 hover:border-cyan-400/60 transition-all duration-300 rounded-lg"
+            className="group flex items-center gap-2 px-3 py-1.5 md:px-6 md:py-3 border border-cyan-500/30 bg-black/40 backdrop-blur-sm hover:bg-cyan-900/10 hover:border-cyan-400/60 transition-all duration-300 rounded-lg"
           >
-            <span className="text-xs font-mono text-cyan-400 tracking-widest uppercase group-hover:text-cyan-300">
+            <span className="text-[10px] md:text-xs font-mono text-cyan-400 tracking-widest uppercase group-hover:text-cyan-300">
               Initialize Login
             </span>
-            <svg className="w-4 h-4 text-cyan-500 opacity-70 group-hover:opacity-100 transition-opacity" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <svg className="w-3 h-3 md:w-4 md:h-4 text-cyan-500 opacity-70 group-hover:opacity-100 transition-opacity" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1" />
             </svg>
           </button>
@@ -271,7 +271,7 @@ const App: React.FC = () => {
       )}
       
       {/* Attribution / Instructions */}
-      <div className="absolute bottom-4 left-4 text-[10px] text-gray-600 font-mono z-10 pointer-events-none">
+      <div className="absolute bottom-2 left-2 md:bottom-4 md:left-4 text-[8px] md:text-[10px] text-gray-600 font-mono z-10 pointer-events-none">
         POWERED BY GEMINI LIVE • USE HEADPHONES FOR BEST EXPERIENCE
       </div>
 

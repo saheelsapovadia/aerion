@@ -42,11 +42,11 @@ const MissionTimer: React.FC<MissionTimerProps> = ({ state }) => {
   };
 
   return (
-    <div className="absolute top-24 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center w-full max-w-md pointer-events-none">
+    <div className="absolute top-20 md:top-24 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center w-full max-w-[90%] md:max-w-md pointer-events-none">
       
       {/* Holographic HUD Container */}
       <div className={`
-        relative flex flex-col items-center p-6 rounded-xl border backdrop-blur-sm bg-black/40 transition-all duration-500
+        relative flex flex-col items-center p-4 md:p-6 rounded-xl border backdrop-blur-sm bg-black/40 transition-all duration-500
         ${getStatusColor()}
       `}>
         
@@ -64,10 +64,10 @@ const MissionTimer: React.FC<MissionTimerProps> = ({ state }) => {
            </span>
         </div>
 
-        {/* Main Timer */}
-        <div className="text-6xl font-['Space_Grotesk'] font-light tracking-widest tabular-nums drop-shadow-md">
-          {formatTime(timeLeft)}
-        </div>
+      {/* Main Timer */}
+      <div className="text-4xl md:text-6xl font-['Space_Grotesk'] font-light tracking-widest tabular-nums drop-shadow-md">
+        {formatTime(timeLeft)}
+      </div>
 
         {/* Mission Data */}
         <div className="w-full mt-4 flex justify-between items-end text-xs font-mono uppercase opacity-70">
