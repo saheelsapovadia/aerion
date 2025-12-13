@@ -1,7 +1,14 @@
 import { Pool } from 'pg';
 import dotenv from 'dotenv';
+import dns from 'dns';
 
 dotenv.config();
+
+// Fix for ENETUNREACH: Force IPv4 resolution
+// Render and other environments may fail with IPv6 (default for Supabase direct connections)
+if (dns.setDefaultResultOrder) {
+  dns.setDefaultResultOrder('ipv4first');
+}
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
