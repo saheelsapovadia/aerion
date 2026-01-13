@@ -19,6 +19,10 @@ dotenv.config();
 const app = express();
 const httpServer = createServer(app);
 
+// Feature flag: Use WebSocket for audio instead of WebRTC
+// Set to 'true' in production environments where WebRTC NAT traversal fails
+const USE_WEBSOCKET_AUDIO = process.env.USE_WEBSOCKET_AUDIO === 'true';
+
 // Initialize Redis
 const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
 
@@ -280,93 +284,96 @@ io.on('connection', async (socket) => {
     }
   }, 1000);
 
-  // Initialize WebRTC and Gemini for this client
+  // Initialize WebRTC/WebSocket and Gemini for this client
   const initializeSession = async () => {
-    logger.debug(`[${socket.id}] Initializing session`);
-    peerConnection = new RTCPeerConnection({
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-    });
+    logger.debug(`[${socket.id}] Initializing session (WebSocket audio: ${USE_WEBSOCKET_AUDIO})`);
+    
+    // Tell client which transport mode to use
+    socket.emit('transport-mode', { useWebSocket: USE_WEBSOCKET_AUDIO });
 
-    // Create Audio Source to send audio to client
-    audioSource = new RTCAudioSource();
-    const track = audioSource.createTrack();
-    peerConnection.addTrack(track);
+    // WebRTC setup (only if not using WebSocket audio)
+    if (!USE_WEBSOCKET_AUDIO) {
+      peerConnection = new RTCPeerConnection({
+        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+      });
 
-    // Handle incoming audio from client
-    peerConnection.ontrack = (event) => {
-      if (event.track.kind === 'audio') {
-        logger.debug(`[${socket.id}] Received audio track from client`);
-        audioSink = new RTCAudioSink(event.track);
-        
-        audioSink.ondata = (data: any) => {
-            // Check input audio volume
-            const samples = data.samples; // Int16Array
-            const rms = calculateRMS(samples);
-            if (rms > AUDIO_ACTIVITY_THRESHOLD) {
-                updateActivity();
-            }
+      // Create Audio Source to send audio to client
+      audioSource = new RTCAudioSource();
+      const track = audioSource.createTrack();
+      peerConnection.addTrack(track);
 
-            // data.samples is Int16Array (usually 48kHz)
-            // Convert to Buffer
-            const buffer = Buffer.from(data.samples.buffer);
-            
-            // Downsample 48k -> 16k for Gemini
-            const resampled = AudioConverter.downsample(buffer);
-            
-            if (geminiSession) {
-                // logger.debug(`[${socket.id}] Sending audio to Gemini: ${resampled.length} bytes`);
-                // Wait for session to be fully connected before sending
-                geminiSession.sendAudio(resampled);
-            }
-        };
-      }
-    };
+      // Handle incoming audio from client
+      peerConnection.ontrack = (event) => {
+        if (event.track.kind === 'audio') {
+          logger.debug(`[${socket.id}] Received audio track from client`);
+          audioSink = new RTCAudioSink(event.track);
+          
+          audioSink.ondata = (data: any) => {
+              // Check input audio volume
+              const samples = data.samples; // Int16Array
+              const rms = calculateRMS(samples);
+              if (rms > AUDIO_ACTIVITY_THRESHOLD) {
+                  updateActivity();
+              }
 
-    peerConnection.onicecandidate = (event) => {
-      if (event.candidate) {
-        logger.debug(`[${socket.id}] Sending ICE candidate to client`);
-        socket.emit('ice-candidate', event.candidate);
-      }
-    };
+              // data.samples is Int16Array (usually 48kHz)
+              // Convert to Buffer
+              const buffer = Buffer.from(data.samples.buffer);
+              
+              // Downsample 48k -> 16k for Gemini
+              const resampled = AudioConverter.downsample(buffer);
+              
+              if (geminiSession) {
+                  geminiSession.sendAudio(resampled);
+              }
+          };
+        }
+      };
+
+      peerConnection.onicecandidate = (event) => {
+        if (event.candidate) {
+          logger.debug(`[${socket.id}] Sending ICE candidate to client`);
+          socket.emit('ice-candidate', event.candidate);
+        }
+      };
+    }
 
     // Initialize Gemini
     logger.debug(`[${socket.id}] Initializing Gemini session with key length: ${GEMINI_API_KEY?.length}`);
     geminiSession = new GeminiSession(GEMINI_API_KEY);
     
     geminiSession.on('audio', (audioData: Buffer) => {
-        // Gemini sends 24kHz PCM
-        // Upsample to 48kHz for WebRTC
-        const upsampled = AudioConverter.upsample(audioData);
-        
         // Always update activity on Gemini audio response
         updateActivity();
 
-        // Send to WebRTC source
-        // RTCAudioSource expects { samples: Int16Array, sampleRate: 48000 }
-        const samples = new Int16Array(upsampled.buffer, upsampled.byteOffset, upsampled.length / 2);
-        
-        // wrtc.nonstandard.RTCAudioSource expects exactly 10ms of audio data
-        // 48000 Hz * 0.01 s = 480 samples
-        const SAMPLE_RATE = 48000;
-        const CHUNK_SIZE = 480; // 10ms at 48kHz
-        
-        // logger.debug(`[${socket.id}] Received audio from Gemini: ${samples.length} samples`);
+        if (USE_WEBSOCKET_AUDIO) {
+          // WebSocket mode: send audio as base64 over socket
+          // Gemini sends 24kHz PCM, client expects 24kHz
+          socket.emit('audio-data', audioData.toString('base64'));
+        } else {
+          // WebRTC mode: send through RTCAudioSource
+          // Gemini sends 24kHz PCM, upsample to 48kHz for WebRTC
+          const upsampled = AudioConverter.upsample(audioData);
+          const samples = new Int16Array(upsampled.buffer, upsampled.byteOffset, upsampled.length / 2);
+          
+          const SAMPLE_RATE = 48000;
+          const CHUNK_SIZE = 480; // 10ms at 48kHz
 
-        for (let i = 0; i < samples.length; i += CHUNK_SIZE) {
-            if (i + CHUNK_SIZE > samples.length) break; // Skip incomplete chunk
+          for (let i = 0; i < samples.length; i += CHUNK_SIZE) {
+              if (i + CHUNK_SIZE > samples.length) break;
 
-            const chunk = samples.subarray(i, i + CHUNK_SIZE);
-            // Create a new Int16Array copy to avoid reference issues
-            const chunkCopy = new Int16Array(chunk);
-            
-            try {
-                audioSource.onData({
-                    samples: chunkCopy,
-                    sampleRate: SAMPLE_RATE
-                });
-            } catch (error) {
-                logger.error(`[${socket.id}] Error sending audio chunk:`, error);
-            }
+              const chunk = samples.subarray(i, i + CHUNK_SIZE);
+              const chunkCopy = new Int16Array(chunk);
+              
+              try {
+                  audioSource.onData({
+                      samples: chunkCopy,
+                      sampleRate: SAMPLE_RATE
+                  });
+              } catch (error) {
+                  logger.error(`[${socket.id}] Error sending audio chunk:`, error);
+              }
+          }
         }
     });
 
@@ -487,6 +494,29 @@ io.on('connection', async (socket) => {
         await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
     } catch (e) {
         logger.error(`[${socket.id}] Error adding received ice candidate`, e);
+    }
+  });
+
+  // WebSocket audio handler (only used when USE_WEBSOCKET_AUDIO is true)
+  socket.on('audio-data', (base64Audio: string) => {
+    if (!USE_WEBSOCKET_AUDIO) return;
+    
+    try {
+      const audioBuffer = Buffer.from(base64Audio, 'base64');
+      
+      // Check audio activity
+      const samples = new Int16Array(audioBuffer.buffer, audioBuffer.byteOffset, audioBuffer.length / 2);
+      const rms = calculateRMS(samples);
+      if (rms > AUDIO_ACTIVITY_THRESHOLD) {
+        updateActivity();
+      }
+      
+      // Client sends 16kHz audio, Gemini expects 16kHz - no conversion needed
+      if (geminiSession) {
+        geminiSession.sendAudio(audioBuffer);
+      }
+    } catch (e) {
+      logger.error(`[${socket.id}] Error processing WebSocket audio:`, e);
     }
   });
 

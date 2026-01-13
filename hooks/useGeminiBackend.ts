@@ -2,15 +2,32 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { ConnectionState, TimerState, TimerStatus } from '../types';
 import { useSoundEffects } from './useSoundEffects';
-import { logger } from '../utils/logger';
+import { API_BASE_URL } from '../config';
 
 interface UseGeminiBackendProps {
   onAudioActivity?: (volume: number) => void;
 }
 
-import { API_BASE_URL } from '../config';
-
 const SERVER_URL = API_BASE_URL;
+
+// Helper to convert Float32Array to Int16Array
+const float32ToInt16 = (float32Array: Float32Array): Int16Array => {
+  const int16Array = new Int16Array(float32Array.length);
+  for (let i = 0; i < float32Array.length; i++) {
+    const s = Math.max(-1, Math.min(1, float32Array[i]));
+    int16Array[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+  }
+  return int16Array;
+};
+
+// Helper to convert Int16Array to Float32Array  
+const int16ToFloat32 = (int16Array: Int16Array): Float32Array => {
+  const float32Array = new Float32Array(int16Array.length);
+  for (let i = 0; i < int16Array.length; i++) {
+    float32Array[i] = int16Array[i] / (int16Array[i] < 0 ? 0x8000 : 0x7FFF);
+  }
+  return float32Array;
+};
 
 export const useGeminiBackend = ({ onAudioActivity }: UseGeminiBackendProps = {}) => {
   const [connectionState, setConnectionState] = useState<ConnectionState>(ConnectionState.DISCONNECTED);
@@ -40,6 +57,12 @@ export const useGeminiBackend = ({ onAudioActivity }: UseGeminiBackendProps = {}
   const socketRef = useRef<Socket | null>(null);
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
+  
+  // WebSocket audio mode refs
+  const useWebSocketAudioRef = useRef<boolean>(false);
+  const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const audioPlaybackQueueRef = useRef<Int16Array[]>([]);
+  const isPlayingRef = useRef<boolean>(false);
   
   const sessionIdRef = useRef<string>(
     typeof crypto !== 'undefined' && crypto.randomUUID 
@@ -94,7 +117,7 @@ export const useGeminiBackend = ({ onAudioActivity }: UseGeminiBackendProps = {}
     // Only emit if status has actually changed
     if (timerState.status !== prevStatusRef.current) {
       if (socketRef.current && sessionIdRef.current) {
-          logger.debug(`[Frontend] Emitting session update: ${timerState.status}`, timerState.config);
+          console.log(`[Frontend] Emitting session update: ${timerState.status}`, timerState.config);
           socketRef.current.emit('client-session-update', {
               status: timerState.status,
               config: timerState.config
@@ -107,7 +130,7 @@ export const useGeminiBackend = ({ onAudioActivity }: UseGeminiBackendProps = {}
              ? crypto.randomUUID() 
              : 'session-' + Date.now();
           
-          logger.info(`[Frontend] Timer finished. Generating new session ID: ${newSessionId}`);
+          console.log(`[Frontend] Timer finished. Generating new session ID: ${newSessionId}`);
           sessionIdRef.current = newSessionId;
 
           if (socketRef.current) {
@@ -119,10 +142,42 @@ export const useGeminiBackend = ({ onAudioActivity }: UseGeminiBackendProps = {}
     }
   }, [timerState]); // Depend on full timerState to ensure fresh closure, but filter by status change
 
+  // Play audio from the WebSocket queue
+  const playAudioQueue = useCallback((ctx: AudioContext) => {
+    if (audioPlaybackQueueRef.current.length === 0) {
+      isPlayingRef.current = false;
+      return;
+    }
+    
+    isPlayingRef.current = true;
+    const int16Data = audioPlaybackQueueRef.current.shift()!;
+    const float32Data = int16ToFloat32(int16Data);
+    
+    // Gemini sends 24kHz audio
+    const audioBuffer = ctx.createBuffer(1, float32Data.length, 24000);
+    audioBuffer.getChannelData(0).set(float32Data);
+    
+    const bufferSource = ctx.createBufferSource();
+    bufferSource.buffer = audioBuffer;
+    
+    // Connect to analyser for visualization
+    if (outputAnalyserRef.current) {
+      bufferSource.connect(outputAnalyserRef.current);
+      outputAnalyserRef.current.connect(ctx.destination);
+    } else {
+      bufferSource.connect(ctx.destination);
+    }
+    
+    bufferSource.onended = () => {
+      playAudioQueue(ctx);
+    };
+    
+    bufferSource.start();
+  }, []);
+
   // Initialize Audio Context
   const ensureAudioContext = useCallback(() => {
     if (!audioContextRef.current) {
-      logger.debug('[Audio] Initializing AudioContext');
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       audioContextRef.current = new AudioContextClass({ sampleRate: 24000 });
       
@@ -136,7 +191,6 @@ export const useGeminiBackend = ({ onAudioActivity }: UseGeminiBackendProps = {}
     }
     
     if (audioContextRef.current.state === 'suspended') {
-      logger.debug('[Audio] Resuming AudioContext');
       audioContextRef.current.resume();
     }
     
@@ -145,12 +199,10 @@ export const useGeminiBackend = ({ onAudioActivity }: UseGeminiBackendProps = {}
 
   const connect = useCallback(async (user?: any) => {
     try {
-      logger.info('[Connection] Starting connection sequence...');
       setConnectionState(ConnectionState.CONNECTING);
       const ctx = ensureAudioContext();
 
       // 1. Get Microphone Stream
-      logger.debug('[Audio] Requesting microphone access');
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
@@ -160,7 +212,6 @@ export const useGeminiBackend = ({ onAudioActivity }: UseGeminiBackendProps = {}
         }
       });
       streamRef.current = stream;
-      logger.debug('[Audio] Microphone stream obtained');
 
       // Setup Input Analyser
       const source = ctx.createMediaStreamSource(stream);
@@ -169,7 +220,6 @@ export const useGeminiBackend = ({ onAudioActivity }: UseGeminiBackendProps = {}
       }
 
       // 2. Setup Socket & WebRTC
-      logger.debug(`[Socket] Connecting to ${SERVER_URL}`);
       const socket = io(SERVER_URL, {
         transports: ['websocket', 'polling'],
         reconnection: true,
@@ -183,83 +233,118 @@ export const useGeminiBackend = ({ onAudioActivity }: UseGeminiBackendProps = {}
       socketRef.current = socket;
 
       socket.on('connect_error', (err) => {
-        logger.error("Socket connection error:", err);
+        console.error("Socket connection error:", err);
         setError(`Socket error: ${err.message}`);
       });
 
-      socket.on('connect', async () => {
-        logger.info('[Socket] Connected to signaling server');
-        
-        // Create Peer Connection
-        logger.debug('[WebRTC] Creating PeerConnection');
-        const pc = new RTCPeerConnection({
-          iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-        });
-        peerConnectionRef.current = pc;
+      socket.on('connect', () => {
+        console.log('Connected to signaling server, waiting for transport mode...');
+      });
 
-        // Add Local Tracks
-        stream.getTracks().forEach(track => {
-            logger.debug(`[WebRTC] Adding local track: ${track.kind}`);
-            pc.addTrack(track, stream);
-        });
+      // Handle transport mode from server
+      socket.on('transport-mode', async ({ useWebSocket }: { useWebSocket: boolean }) => {
+        console.log(`Transport mode: ${useWebSocket ? 'WebSocket' : 'WebRTC'}`);
+        useWebSocketAudioRef.current = useWebSocket;
 
-        // Handle Remote Track
-        pc.ontrack = (event) => {
-            logger.info('[WebRTC] Received remote track');
-            const remoteStream = event.streams[0] || new MediaStream([event.track]);
-            
-            // Create Audio Element to play (needed for WebRTC audio)
-            if (!remoteAudioRef.current) {
-                remoteAudioRef.current = new Audio();
-                remoteAudioRef.current.autoplay = true;
+        if (useWebSocket) {
+          // ===== WebSocket Audio Mode =====
+          console.log('Setting up WebSocket audio transport');
+          
+          // Create a separate AudioContext for capture at 16kHz
+          const captureCtx = new AudioContext({ sampleRate: 16000 });
+          const captureSource = captureCtx.createMediaStreamSource(stream);
+          
+          // Use ScriptProcessorNode to capture audio chunks
+          const processor = captureCtx.createScriptProcessor(4096, 1, 1);
+          scriptProcessorRef.current = processor;
+          
+          processor.onaudioprocess = (e) => {
+            const inputData = e.inputBuffer.getChannelData(0);
+            const int16Data = float32ToInt16(inputData);
+            const base64 = btoa(String.fromCharCode(...new Uint8Array(int16Data.buffer)));
+            socket.emit('audio-data', base64);
+          };
+          
+          captureSource.connect(processor);
+          processor.connect(captureCtx.destination); // Required for processing to work
+          
+          // Handle incoming audio from server
+          socket.on('audio-data', (base64Audio: string) => {
+            try {
+              const binaryString = atob(base64Audio);
+              const bytes = new Uint8Array(binaryString.length);
+              for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+              }
+              const int16Data = new Int16Array(bytes.buffer);
+              audioPlaybackQueueRef.current.push(int16Data);
+              
+              // Start playback if not already playing
+              if (!isPlayingRef.current) {
+                playAudioQueue(ctx);
+              }
+            } catch (e) {
+              console.error('Error processing incoming audio:', e);
             }
-            remoteAudioRef.current.srcObject = remoteStream;
-            
-            // Connect to Output Analyser for visualization
-            if (ctx.state === 'running') {
-                try {
-                    const remoteSource = ctx.createMediaStreamSource(remoteStream);
-                    if (outputAnalyserRef.current) {
-                        remoteSource.connect(outputAnalyserRef.current);
-                        // Don't connect to destination here if Audio Element is playing, 
-                        // otherwise we get double audio + echo.
-                        // BUT, createMediaStreamSource might mute the element if not handled correctly.
-                        // Usually it's better to route: remoteSource -> analyser -> destination
-                        // and NOT use the Audio element for output, just for keeping the stream alive.
-                        // Let's try using Web Audio for output entirely.
-                        
-                        remoteAudioRef.current.muted = true; // Mute element, play via Web Audio
-                        outputAnalyserRef.current.connect(ctx.destination);
-                    }
-                } catch (e) {
-                    logger.error("Error connecting remote audio", e);
-                }
-            }
-        };
+          });
+          
+          setConnectionState(ConnectionState.CONNECTED);
+          playStart();
+          
+        } else {
+          // ===== WebRTC Audio Mode =====
+          console.log('Setting up WebRTC audio transport');
+          
+          const pc = new RTCPeerConnection({
+            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+          });
+          peerConnectionRef.current = pc;
 
-        pc.onicecandidate = (event) => {
-            if (event.candidate) {
-                logger.debug('[WebRTC] Sending ICE candidate');
-                socket.emit('ice-candidate', event.candidate);
-            }
-        };
+          // Add Local Tracks
+          stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
-        pc.onconnectionstatechange = () => {
-            logger.debug(`[WebRTC] Connection state changed: ${pc.connectionState}`);
-        };
+          // Handle Remote Track
+          pc.ontrack = (event) => {
+              console.log('Received remote track');
+              const remoteStream = event.streams[0] || new MediaStream([event.track]);
+              
+              if (!remoteAudioRef.current) {
+                  remoteAudioRef.current = new Audio();
+                  remoteAudioRef.current.autoplay = true;
+              }
+              remoteAudioRef.current.srcObject = remoteStream;
+              
+              if (ctx.state === 'running') {
+                  try {
+                      const remoteSource = ctx.createMediaStreamSource(remoteStream);
+                      if (outputAnalyserRef.current) {
+                          remoteSource.connect(outputAnalyserRef.current);
+                          remoteAudioRef.current.muted = true;
+                          outputAnalyserRef.current.connect(ctx.destination);
+                      }
+                  } catch (e) {
+                      console.error("Error connecting remote audio", e);
+                  }
+              }
+          };
 
-        // Create Offer
-        logger.debug('[WebRTC] Creating offer');
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        socket.emit('offer', offer);
-        
-        setConnectionState(ConnectionState.CONNECTED);
-        playStart();
+          pc.onicecandidate = (event) => {
+              if (event.candidate) {
+                  socket.emit('ice-candidate', event.candidate);
+              }
+          };
+
+          // Create Offer
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          socket.emit('offer', offer);
+          
+          setConnectionState(ConnectionState.CONNECTED);
+          playStart();
+        }
       });
 
       socket.on('answer', async (answer) => {
-        logger.debug('[WebRTC] Received answer');
         if (peerConnectionRef.current) {
             await peerConnectionRef.current.setRemoteDescription(answer);
         }
@@ -268,15 +353,14 @@ export const useGeminiBackend = ({ onAudioActivity }: UseGeminiBackendProps = {}
       socket.on('ice-candidate', async (candidate) => {
           if (peerConnectionRef.current) {
               try {
-                logger.debug('[WebRTC] Received ICE candidate');
                 await peerConnectionRef.current.addIceCandidate(candidate);
-              } catch (e) { logger.error('Error adding ICE candidate', e); }
+              } catch (e) { console.error(e); }
           }
       });
 
       socket.on('tool-call', (data: { name: string, args: any }) => {
         const { name, args } = data;
-        logger.info('Tool Call Received:', name, args);
+        console.log('Tool Call Received:', name, args);
 
         // Update Timer State based on tool call
         switch(name) {
@@ -314,21 +398,19 @@ export const useGeminiBackend = ({ onAudioActivity }: UseGeminiBackendProps = {}
       });
 
       socket.on('disconnect', () => {
-        logger.info('[Socket] Disconnected');
         setConnectionState(ConnectionState.DISCONNECTED);
         playStop();
       });
 
     } catch (err: any) {
-      logger.error("Connection failed", err);
+      console.error("Connection failed", err);
       setConnectionState(ConnectionState.ERROR);
       setError(err.message);
       playStop();
     }
-  }, [ensureAudioContext, playStart, playStop, playPause, playResume, playBreakStart]);
+  }, [ensureAudioContext, playStart, playStop, playPause, playResume, playBreakStart, playAudioQueue]);
 
   const disconnect = useCallback(() => {
-    logger.info('[Connection] Disconnecting...');
     if (socketRef.current) {
         socketRef.current.disconnect();
         socketRef.current = null;
@@ -345,6 +427,14 @@ export const useGeminiBackend = ({ onAudioActivity }: UseGeminiBackendProps = {}
         remoteAudioRef.current.srcObject = null;
         remoteAudioRef.current = null;
     }
+    // Clean up WebSocket audio resources
+    if (scriptProcessorRef.current) {
+        scriptProcessorRef.current.disconnect();
+        scriptProcessorRef.current = null;
+    }
+    audioPlaybackQueueRef.current = [];
+    isPlayingRef.current = false;
+    useWebSocketAudioRef.current = false;
     
     setConnectionState(ConnectionState.DISCONNECTED);
     playStop();
