@@ -2,12 +2,15 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { ConnectionState, TimerState, TimerStatus } from '../types';
 import { useSoundEffects } from './useSoundEffects';
+import { logger } from '../utils/logger';
 
 interface UseGeminiBackendProps {
   onAudioActivity?: (volume: number) => void;
 }
 
-const SERVER_URL = 'https://aerion.onrender.com';
+import { API_BASE_URL } from '../config';
+
+const SERVER_URL = API_BASE_URL;
 
 export const useGeminiBackend = ({ onAudioActivity }: UseGeminiBackendProps = {}) => {
   const [connectionState, setConnectionState] = useState<ConnectionState>(ConnectionState.DISCONNECTED);
@@ -91,7 +94,7 @@ export const useGeminiBackend = ({ onAudioActivity }: UseGeminiBackendProps = {}
     // Only emit if status has actually changed
     if (timerState.status !== prevStatusRef.current) {
       if (socketRef.current && sessionIdRef.current) {
-          console.log(`[Frontend] Emitting session update: ${timerState.status}`, timerState.config);
+          logger.debug(`[Frontend] Emitting session update: ${timerState.status}`, timerState.config);
           socketRef.current.emit('client-session-update', {
               status: timerState.status,
               config: timerState.config
@@ -104,7 +107,7 @@ export const useGeminiBackend = ({ onAudioActivity }: UseGeminiBackendProps = {}
              ? crypto.randomUUID() 
              : 'session-' + Date.now();
           
-          console.log(`[Frontend] Timer finished. Generating new session ID: ${newSessionId}`);
+          logger.info(`[Frontend] Timer finished. Generating new session ID: ${newSessionId}`);
           sessionIdRef.current = newSessionId;
 
           if (socketRef.current) {
@@ -119,6 +122,7 @@ export const useGeminiBackend = ({ onAudioActivity }: UseGeminiBackendProps = {}
   // Initialize Audio Context
   const ensureAudioContext = useCallback(() => {
     if (!audioContextRef.current) {
+      logger.debug('[Audio] Initializing AudioContext');
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       audioContextRef.current = new AudioContextClass({ sampleRate: 24000 });
       
@@ -132,6 +136,7 @@ export const useGeminiBackend = ({ onAudioActivity }: UseGeminiBackendProps = {}
     }
     
     if (audioContextRef.current.state === 'suspended') {
+      logger.debug('[Audio] Resuming AudioContext');
       audioContextRef.current.resume();
     }
     
@@ -140,10 +145,12 @@ export const useGeminiBackend = ({ onAudioActivity }: UseGeminiBackendProps = {}
 
   const connect = useCallback(async (user?: any) => {
     try {
+      logger.info('[Connection] Starting connection sequence...');
       setConnectionState(ConnectionState.CONNECTING);
       const ctx = ensureAudioContext();
 
       // 1. Get Microphone Stream
+      logger.debug('[Audio] Requesting microphone access');
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
@@ -153,6 +160,7 @@ export const useGeminiBackend = ({ onAudioActivity }: UseGeminiBackendProps = {}
         }
       });
       streamRef.current = stream;
+      logger.debug('[Audio] Microphone stream obtained');
 
       // Setup Input Analyser
       const source = ctx.createMediaStreamSource(stream);
@@ -161,6 +169,7 @@ export const useGeminiBackend = ({ onAudioActivity }: UseGeminiBackendProps = {}
       }
 
       // 2. Setup Socket & WebRTC
+      logger.debug(`[Socket] Connecting to ${SERVER_URL}`);
       const socket = io(SERVER_URL, {
         transports: ['websocket', 'polling'],
         reconnection: true,
@@ -174,25 +183,29 @@ export const useGeminiBackend = ({ onAudioActivity }: UseGeminiBackendProps = {}
       socketRef.current = socket;
 
       socket.on('connect_error', (err) => {
-        console.error("Socket connection error:", err);
+        logger.error("Socket connection error:", err);
         setError(`Socket error: ${err.message}`);
       });
 
       socket.on('connect', async () => {
-        console.log('Connected to signaling server');
+        logger.info('[Socket] Connected to signaling server');
         
         // Create Peer Connection
+        logger.debug('[WebRTC] Creating PeerConnection');
         const pc = new RTCPeerConnection({
           iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
         });
         peerConnectionRef.current = pc;
 
         // Add Local Tracks
-        stream.getTracks().forEach(track => pc.addTrack(track, stream));
+        stream.getTracks().forEach(track => {
+            logger.debug(`[WebRTC] Adding local track: ${track.kind}`);
+            pc.addTrack(track, stream);
+        });
 
         // Handle Remote Track
         pc.ontrack = (event) => {
-            console.log('Received remote track');
+            logger.info('[WebRTC] Received remote track');
             const remoteStream = event.streams[0] || new MediaStream([event.track]);
             
             // Create Audio Element to play (needed for WebRTC audio)
@@ -219,18 +232,24 @@ export const useGeminiBackend = ({ onAudioActivity }: UseGeminiBackendProps = {}
                         outputAnalyserRef.current.connect(ctx.destination);
                     }
                 } catch (e) {
-                    console.error("Error connecting remote audio", e);
+                    logger.error("Error connecting remote audio", e);
                 }
             }
         };
 
         pc.onicecandidate = (event) => {
             if (event.candidate) {
+                logger.debug('[WebRTC] Sending ICE candidate');
                 socket.emit('ice-candidate', event.candidate);
             }
         };
 
+        pc.onconnectionstatechange = () => {
+            logger.debug(`[WebRTC] Connection state changed: ${pc.connectionState}`);
+        };
+
         // Create Offer
+        logger.debug('[WebRTC] Creating offer');
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
         socket.emit('offer', offer);
@@ -240,6 +259,7 @@ export const useGeminiBackend = ({ onAudioActivity }: UseGeminiBackendProps = {}
       });
 
       socket.on('answer', async (answer) => {
+        logger.debug('[WebRTC] Received answer');
         if (peerConnectionRef.current) {
             await peerConnectionRef.current.setRemoteDescription(answer);
         }
@@ -248,14 +268,15 @@ export const useGeminiBackend = ({ onAudioActivity }: UseGeminiBackendProps = {}
       socket.on('ice-candidate', async (candidate) => {
           if (peerConnectionRef.current) {
               try {
+                logger.debug('[WebRTC] Received ICE candidate');
                 await peerConnectionRef.current.addIceCandidate(candidate);
-              } catch (e) { console.error(e); }
+              } catch (e) { logger.error('Error adding ICE candidate', e); }
           }
       });
 
       socket.on('tool-call', (data: { name: string, args: any }) => {
         const { name, args } = data;
-        console.log('Tool Call Received:', name, args);
+        logger.info('Tool Call Received:', name, args);
 
         // Update Timer State based on tool call
         switch(name) {
@@ -293,12 +314,13 @@ export const useGeminiBackend = ({ onAudioActivity }: UseGeminiBackendProps = {}
       });
 
       socket.on('disconnect', () => {
+        logger.info('[Socket] Disconnected');
         setConnectionState(ConnectionState.DISCONNECTED);
         playStop();
       });
 
     } catch (err: any) {
-      console.error("Connection failed", err);
+      logger.error("Connection failed", err);
       setConnectionState(ConnectionState.ERROR);
       setError(err.message);
       playStop();
@@ -306,6 +328,7 @@ export const useGeminiBackend = ({ onAudioActivity }: UseGeminiBackendProps = {}
   }, [ensureAudioContext, playStart, playStop, playPause, playResume, playBreakStart]);
 
   const disconnect = useCallback(() => {
+    logger.info('[Connection] Disconnecting...');
     if (socketRef.current) {
         socketRef.current.disconnect();
         socketRef.current = null;

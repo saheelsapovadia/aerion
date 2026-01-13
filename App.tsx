@@ -2,6 +2,8 @@ import React, { useRef, useState, useEffect } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { EffectComposer, Bloom, Vignette, Noise } from '@react-three/postprocessing';
 import { useGeminiBackend } from './hooks/useGeminiBackend';
+import { API_BASE_URL } from './config';
+import { logger } from './utils/logger';
 import VisualAgent from './components/VisualAgent';
 import VisualAgentLowPerf from './components/VisualAgentLowPerf';
 import Particles from './components/Particles';
@@ -57,19 +59,25 @@ const App: React.FC = () => {
         ? crypto.randomUUID() 
         : Math.random().toString(36).substring(2) + Date.now().toString(36);
       localStorage.setItem('aerion_device_id', deviceId);
+      logger.info(`[App] New device ID generated: ${deviceId}`);
+    } else {
+        logger.debug(`[App] Device ID: ${localStorage.getItem('aerion_device_id')}`);
     }
 
     // Check trial status
     const usage = parseInt(localStorage.getItem('aerion_trial_usage') || '0', 10);
+    logger.debug(`[App] Trial usage: ${usage}/${TRIAL_LIMIT_SECONDS}`);
     if (usage >= TRIAL_LIMIT_SECONDS) {
       setTrialExpired(true);
       setTrialTimeLeft(0);
+      logger.info('[App] Trial expired');
     } else {
       setTrialTimeLeft(TRIAL_LIMIT_SECONDS - usage);
     }
 
     // Check for auth
-    fetch('https://aerion.onrender.com/me', {
+    logger.debug('[App] Checking authentication...');
+    fetch(`${API_BASE_URL}/me`, {
       credentials: 'include' // Important for cookies
     })
     .then(res => {
@@ -77,10 +85,11 @@ const App: React.FC = () => {
       throw new Error('Not authenticated');
     })
     .then(data => {
+      logger.info(`[App] Authenticated as: ${data.email}`);
       setUser(data);
     })
-    .catch(() => {
-      // Not authenticated
+    .catch((err) => {
+        logger.debug(`[App] Not authenticated: ${err.message}`);
     })
     .finally(() => setLoading(false));
   }, []);
@@ -234,7 +243,7 @@ const App: React.FC = () => {
       {!user && !loading && !trialExpired && (
         <div className="absolute top-2 right-2 md:top-6 md:right-6 z-20">
           <button
-            onClick={() => window.location.href = 'https://aerion.onrender.com/auth/google'}
+            onClick={() => window.location.href = `${API_BASE_URL}/auth/google`}
             className="group flex items-center gap-2 px-3 py-1.5 md:px-6 md:py-3 border border-cyan-500/30 bg-black/40 backdrop-blur-sm hover:bg-cyan-900/10 hover:border-cyan-400/60 transition-all duration-300 rounded-lg"
           >
             <span className="text-[10px] md:text-xs font-mono text-cyan-400 tracking-widest uppercase group-hover:text-cyan-300">

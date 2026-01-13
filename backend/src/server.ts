@@ -50,8 +50,24 @@ app.use(cookieParser());
 app.use(express.json());
 
 // Allow requests from frontend
+const allowedOrigins = [
+  'https://aerion.onrender.com',
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'http://localhost:5173',
+  process.env.FRONTEND_URL
+].filter(Boolean);
+
 app.use(cors({
-    origin: process.env.FRONTEND_URL || 'https://aerion.onrender.com',
+    origin: (origin, callback) => {
+        if (!origin) return callback(null, true);
+        if (allowedOrigins.includes(origin)) {
+            callback(null, true);
+        } else {
+            console.warn(`Blocked CORS origin: ${origin}`);
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
     credentials: true
 }));
 
@@ -201,10 +217,20 @@ const connectionLimiter = new RateLimiter(5, 60000);
 // Cleanup rate limiter periodically
 setInterval(() => connectionLimiter.cleanup(), 60000);
 
+// Helper for backend logging
+const logger = {
+    debug: (msg: string, ...args: any[]) => console.debug(`[DEBUG] ${msg}`, ...args),
+    info: (msg: string, ...args: any[]) => console.info(`[INFO] ${msg}`, ...args),
+    warn: (msg: string, ...args: any[]) => console.warn(`[WARN] ${msg}`, ...args),
+    error: (msg: string, ...args: any[]) => console.error(`[ERROR] ${msg}`, ...args),
+};
+
 io.on('connection', async (socket) => {
   let sessionId = socket.handshake.auth.sessionId as string;
   let userId = socket.handshake.auth.userId ? parseInt(socket.handshake.auth.userId) : null;
   const googleId = socket.handshake.auth.googleId as string;
+
+  logger.info(`New socket connection: ${socket.id}, Session: ${sessionId}, User: ${userId}`);
 
   // Resolve user from Google ID if userId is missing but googleId is present
   if (!userId && googleId) {
@@ -212,26 +238,24 @@ io.on('connection', async (socket) => {
         const { rows } = await query('SELECT id FROM users WHERE google_id = $1', [googleId]);
         if (rows.length > 0) {
             userId = rows[0].id;
-            console.log(`Resolved userId ${userId} from googleId ${googleId}`);
+            logger.info(`Resolved userId ${userId} from googleId ${googleId}`);
         }
     } catch (e) {
-        console.error('Error resolving user from googleId', e);
+        logger.error('Error resolving user from googleId', e);
     }
   }
 
   const clientIp = socket.handshake.address;
   if (!connectionLimiter.check(clientIp)) {
-      console.log(`Rate limit exceeded for ${clientIp}. Disconnecting.`);
+      logger.warn(`Rate limit exceeded for ${clientIp}. Disconnecting.`);
       socket.emit('error', { message: 'Rate limit exceeded. Please try again later.' });
       socket.disconnect(true);
       return;
   }
 
-  console.log('Client connected:', socket.id);
-  
   // Max connection duration timer
   const connectionTimeout = setTimeout(() => {
-    console.log(`Client ${socket.id} reached max connection time of ${CONNECTION_MAX_DURATION_MS/1000}s. Disconnecting.`);
+    logger.info(`Client ${socket.id} reached max connection time of ${CONNECTION_MAX_DURATION_MS/1000}s. Disconnecting.`);
     socket.disconnect(true);
   }, CONNECTION_MAX_DURATION_MS);
 
@@ -251,13 +275,14 @@ io.on('connection', async (socket) => {
   // Check for inactivity periodically
   inactivityInterval = setInterval(() => {
     if (Date.now() - lastActivity > INACTIVITY_TIMEOUT_MS) {
-        console.log(`Client ${socket.id} inactive for ${INACTIVITY_TIMEOUT_MS/1000}s. Disconnecting.`);
+        logger.info(`Client ${socket.id} inactive for ${INACTIVITY_TIMEOUT_MS/1000}s. Disconnecting.`);
         socket.disconnect(true);
     }
   }, 1000);
 
   // Initialize WebRTC and Gemini for this client
   const initializeSession = async () => {
+    logger.debug(`[${socket.id}] Initializing session`);
     peerConnection = new RTCPeerConnection({
       iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
     });
@@ -270,7 +295,7 @@ io.on('connection', async (socket) => {
     // Handle incoming audio from client
     peerConnection.ontrack = (event) => {
       if (event.track.kind === 'audio') {
-        console.log('Received audio track from client');
+        logger.debug(`[${socket.id}] Received audio track from client`);
         audioSink = new RTCAudioSink(event.track);
         
         audioSink.ondata = (data: any) => {
@@ -289,6 +314,8 @@ io.on('connection', async (socket) => {
             const resampled = AudioConverter.downsample(buffer);
             
             if (geminiSession) {
+                // logger.debug(`[${socket.id}] Sending audio to Gemini: ${resampled.length} bytes`);
+                // Wait for session to be fully connected before sending
                 geminiSession.sendAudio(resampled);
             }
         };
@@ -297,11 +324,13 @@ io.on('connection', async (socket) => {
 
     peerConnection.onicecandidate = (event) => {
       if (event.candidate) {
+        logger.debug(`[${socket.id}] Sending ICE candidate to client`);
         socket.emit('ice-candidate', event.candidate);
       }
     };
 
     // Initialize Gemini
+    logger.debug(`[${socket.id}] Initializing Gemini session with key length: ${GEMINI_API_KEY?.length}`);
     geminiSession = new GeminiSession(GEMINI_API_KEY);
     
     geminiSession.on('audio', (audioData: Buffer) => {
@@ -320,6 +349,8 @@ io.on('connection', async (socket) => {
         // 48000 Hz * 0.01 s = 480 samples
         const SAMPLE_RATE = 48000;
         const CHUNK_SIZE = 480; // 10ms at 48kHz
+        
+        // logger.debug(`[${socket.id}] Received audio from Gemini: ${samples.length} samples`);
 
         for (let i = 0; i < samples.length; i += CHUNK_SIZE) {
             if (i + CHUNK_SIZE > samples.length) break; // Skip incomplete chunk
@@ -334,14 +365,14 @@ io.on('connection', async (socket) => {
                     sampleRate: SAMPLE_RATE
                 });
             } catch (error) {
-                console.error("Error sending audio chunk:", error);
+                logger.error(`[${socket.id}] Error sending audio chunk:`, error);
             }
         }
     });
 
     geminiSession.on('toolCall', async (toolCall: any) => {
         updateActivity();
-        console.log('Tool Call:', toolCall);
+        logger.info(`[${socket.id}] Tool Call:`, toolCall);
         
         // Update Session State Logic
         if (sessionId) {
@@ -379,7 +410,7 @@ io.on('connection', async (socket) => {
                     await saveSessionState(sessionId, userId, newState);
                 }
             } catch (e) {
-                console.error("Error updating session persistence:", e);
+                logger.error(`[${socket.id}] Error updating session persistence:`, e);
             }
         }
 
@@ -391,6 +422,7 @@ io.on('connection', async (socket) => {
         const functionResponses = [];
 
         for (const fc of toolCall.functionCalls) {
+             logger.debug(`[${socket.id}] Forwarding tool call to client: ${fc.name}`);
              socket.emit('tool-call', {
                  name: fc.name,
                  args: fc.args
@@ -425,44 +457,53 @@ io.on('connection', async (socket) => {
 
         await geminiSession?.sendToolResponse(functionResponses);
     });
-
-    await geminiSession.connect();
+    
+    try {
+        await geminiSession.connect();
+        logger.info(`[${socket.id}] Gemini session connected`);
+    } catch (err) {
+        logger.error(`[${socket.id}] Failed to connect Gemini session:`, err);
+        socket.emit('error', { message: 'Failed to connect to AI service' });
+    }
   };
 
   initializeSession();
 
   // Signaling Handlers
   socket.on('offer', async (offer) => {
+    logger.debug(`[${socket.id}] Received offer from client`);
     if (!peerConnection) return;
     await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
     const answer = await peerConnection.createAnswer();
     await peerConnection.setLocalDescription(answer);
     socket.emit('answer', answer);
+    logger.debug(`[${socket.id}] Sent answer to client`);
   });
 
   socket.on('ice-candidate', async (candidate) => {
+    // logger.debug(`[${socket.id}] Received ICE candidate from client`);
     if (!peerConnection) return;
     try {
         await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
     } catch (e) {
-        console.error('Error adding received ice candidate', e);
+        logger.error(`[${socket.id}] Error adding received ice candidate`, e);
     }
   });
 
   socket.on('client-session-update', async (data) => {
     if (sessionId) {
-       console.log('Received client session update:', data);
+       logger.debug(`[${socket.id}] Received client session update:`, data);
        await saveSessionState(sessionId, userId, data);
     }
   });
 
   socket.on('update-session-id', (newId) => {
-      console.log(`[Backend] Updating session ID from ${sessionId} to ${newId}`);
+      logger.info(`[${socket.id}] Updating session ID from ${sessionId} to ${newId}`);
       sessionId = newId;
   });
 
   socket.on('disconnect', () => {
-    console.log('Client disconnected');
+    logger.info(`[${socket.id}] Client disconnected`);
     clearTimeout(connectionTimeout);
     if (inactivityInterval) clearInterval(inactivityInterval);
     if (geminiSession) geminiSession.close();

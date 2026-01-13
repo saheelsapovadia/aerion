@@ -46,6 +46,14 @@ export const sessionTools: Tool[] = [
   }
 ];
 
+// Helper for backend logging
+const logger = {
+    debug: (msg: string, ...args: any[]) => console.debug(`[DEBUG] ${msg}`, ...args),
+    info: (msg: string, ...args: any[]) => console.info(`[INFO] ${msg}`, ...args),
+    warn: (msg: string, ...args: any[]) => console.warn(`[WARN] ${msg}`, ...args),
+    error: (msg: string, ...args: any[]) => console.error(`[ERROR] ${msg}`, ...args),
+};
+
 export class GeminiSession extends EventEmitter {
   private client: GoogleGenAI;
   private session: any;
@@ -55,10 +63,12 @@ export class GeminiSession extends EventEmitter {
     super();
     this.apiKey = apiKey;
     this.client = new GoogleGenAI({ apiKey: this.apiKey });
+    logger.info(`GeminiSession initialized with API key length: ${apiKey?.length}`);
   }
 
   async connect() {
     try {
+      logger.info(`Connecting to Gemini Live (Model: ${MODEL_NAME})...`);
       this.session = await this.client.live.connect({
         model: MODEL_NAME,
         config: {
@@ -71,24 +81,26 @@ export class GeminiSession extends EventEmitter {
         },
         callbacks: {
           onopen: () => {
-            console.log('Gemini Live Connection Opened');
+            logger.info('Gemini Live Connection Opened');
             this.emit('connected');
           },
           onmessage: (msg: LiveServerMessage) => {
+            // logger.debug('Gemini Message received');
             this.handleMessage(msg);
           },
           onclose: () => {
-            console.log('Gemini Live Connection Closed');
+            logger.info('Gemini Live Connection Closed');
             this.emit('disconnected');
           },
           onerror: (err: any) => {
-            console.error('Gemini Live Error:', err);
+            logger.error('Gemini Live Error:', err);
             this.emit('error', err);
           }
         }
       });
+      logger.info('Gemini Live connection established');
     } catch (error) {
-      console.error('Failed to connect to Gemini Live:', error);
+      logger.error('Failed to connect to Gemini Live:', error);
       this.emit('error', error);
     }
   }
@@ -96,15 +108,8 @@ export class GeminiSession extends EventEmitter {
   async sendAudio(pcmData: Buffer | string) {
     if (this.session) {
       try {
-        // If pcmData is Buffer, convert to base64 or send as is if supported
-        // The SDK usually expects an object with 'media' property
-        // Depending on SDK version, it might take a specific format
-        
-        // Assuming sendRealtimeInput takes { media: { mimeType, data } } or similar
-        // Based on frontend code: session.sendRealtimeInput({ media: pcmBlob });
-        // In node we construct the object manually
-        
         const data = Buffer.isBuffer(pcmData) ? pcmData.toString('base64') : pcmData;
+        // logger.debug(`Sending ${data.length} bytes of audio to Gemini`);
         
         await this.session.sendRealtimeInput({
             media: {
@@ -113,22 +118,29 @@ export class GeminiSession extends EventEmitter {
             }
         });
       } catch (e) {
-        console.error("Error sending audio to Gemini", e);
+        logger.error("Error sending audio to Gemini", e);
       }
+    } else {
+        // Suppress warning if just starting up, or maybe just log once
+        // logger.warn("Attempted to send audio but session is not active");
     }
   }
 
   async sendToolResponse(functionResponses: any[]) {
     if (this.session) {
+        logger.info('Sending tool response to Gemini:', functionResponses);
         await this.session.sendToolResponse({
             functionResponses
         });
+    } else {
+        logger.warn("Attempted to send tool response but session is not active");
     }
   }
 
   private handleMessage(msg: LiveServerMessage) {
     // Handle Tool Calls
     if (msg.toolCall) {
+        logger.info('Received tool call from Gemini:', msg.toolCall);
         this.emit('toolCall', msg.toolCall);
     }
 
@@ -136,17 +148,24 @@ export class GeminiSession extends EventEmitter {
     const audioData = msg.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
     if (audioData) {
         // audioData is Base64 string
+        // logger.debug('Received audio response from Gemini');
         const buffer = Buffer.from(audioData, 'base64');
         this.emit('audio', buffer);
     }
     
     if (msg.serverContent?.interrupted) {
+        logger.info('Gemini output interrupted');
         this.emit('interrupted');
+    }
+    
+    if (msg.serverContent?.turnComplete) {
+        logger.debug('Gemini turn complete');
     }
   }
 
   close() {
     if (this.session) {
+        logger.info("Closing Gemini session");
         // this.session.close(); // If close method exists
         // Or it might just be let go
     }
